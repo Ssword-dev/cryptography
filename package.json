@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "build": "yarn node build.mjs",
-    "lint": "eslint"
+    "lint": "eslint",
+    "stress:sea256": "yarn node dist/hashTester.js --module ./dist/index.js --function sea256 --hash-input test --test-iteration 1000000"
   },
   "dependencies": {
     "cli-progress": "^3.12.0"

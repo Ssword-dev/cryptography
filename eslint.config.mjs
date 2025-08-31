@@ -19,7 +19,10 @@ export default [
       "@typescript-eslint/no-unused-vars": [
         "error",
         {
+          // ignore variables starting with underscore
           argsIgnorePattern: "^_",
+          varsIgnorePattern: "^_",
+          caughtErrorsIgnorePattern: "^_",
         },
       ],
 

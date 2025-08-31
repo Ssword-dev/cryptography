@@ -1,15 +1,19 @@
+#!/usr/bin/node
 import crypto from "node:crypto";
 import { createRequire } from "node:module";
-import path from "node:path";
+import { basename } from "node:path";
 import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
+import { HashFunction } from "./types";
 
 const require = createRequire(new URL(import.meta.url));
 export class HashTester {
-  private hashFn: (s: string) => string;
+  private hashFn: HashFunction;
+  private testingKey: string;
 
-  constructor(hashFn: (s: string) => string) {
+  constructor(hashFn: HashFunction, testingKey: string = "test-key") {
     this.hashFn = hashFn;
+    this.testingKey = testingKey;
   }
 
   // flip a bit in string (utf-8)
@@ -57,14 +61,20 @@ export class HashTester {
   }
 
   avalanche(input: string, flips = 100): { avg: number; bits: number[] } {
-    const originalHash = this.hashFn(input);
+    const originalHash = this.hashFn({
+      input: input,
+      key: this.testingKey,
+    });
     let total = 0;
     const distances: number[] = [];
 
     for (let i = 0; i < flips; i++) {
       const pos = Math.floor(Math.random() * (input.length * 8));
       const flipped = this.flipBit(input, pos);
-      const newHash = this.hashFn(flipped);
+      const newHash = this.hashFn({
+        input: flipped,
+        key: this.testingKey,
+      });
       const dist = HashTester.hammingDistance(originalHash, newHash);
       total += dist;
       distances.push(dist);
@@ -74,106 +84,168 @@ export class HashTester {
   }
 
   diffusion(input: string, flips: number = 100): number {
-    const originalHash = this.hashFn(input);
+    const originalHash = this.hashFn({
+      input: input,
+      key: this.testingKey,
+    });
     const hashBits = Buffer.from(originalHash, "hex").length * 8; // total bits
     let totalDiffBits = 0;
 
     for (let i = 0; i < flips; i++) {
       const flipped = this.flipBit(input, i % (input.length * 8));
-      const newHash = this.hashFn(flipped);
+      const newHash = this.hashFn({
+        input: flipped,
+        key: this.testingKey,
+      });
       totalDiffBits += HashTester.bitDiff(originalHash, newHash);
     }
 
     const avgDiffBits = totalDiffBits / flips;
-    return avgDiffBits / hashBits; // normalized [0,1], e.g. 0.5 = 50% avalanche
+    return avgDiffBits / hashBits;
   }
 
   preimage(output: string, inputLength = 10, attempts = 1e6) {
     for (let i = 0; i < attempts; i++) {
       const candidate = crypto.randomBytes(inputLength).toString("utf-8"); // random string
-      if (this.hashFn(candidate) === output) {
+      if (
+        this.hashFn({
+          input: candidate,
+          key: this.testingKey,
+        }) === output
+      ) {
         return { found: true, candidate, tries: i + 1 };
       }
     }
     return { found: false, tries: attempts };
   }
-}
 
-interface CompiledHashFunction {
-  (input: string): string;
+  collision(iterations: number = 1e6) {
+    const seen = new Set();
+    let collisions = 0;
+
+    for (let i = 0; i < iterations; i++) {
+      const input = crypto.randomBytes(16 / 2).toString("hex");
+      const hash = this.hashFn({
+        input,
+        key: this.testingKey,
+      });
+
+      if (seen.has(hash)) {
+        collisions++;
+      } else {
+        seen.add(hash);
+      }
+    }
+
+    return { collisions, iterations };
+  }
 }
 
 // ---------------------- CLI loader ----------------------
-async function loadHashFn(
-  modulePath: string,
-  exportName?: string,
-): Promise<(s: string) => string> {
-  const resolvedPath = path.resolve(process.cwd(), modulePath);
-  let mod: Record<string, unknown>;
 
-  try {
-    mod = await import(resolvedPath);
-  } catch {
-    // fallback to require for CommonJS
-    mod = require(resolvedPath);
+function loadHashFunctionFromExports(
+  exports: unknown,
+  hashFunctionExport?: string,
+): HashFunction {
+  if (
+    !exports ||
+    (typeof exports !== "object" && typeof exports !== "function")
+  ) {
+    throw new Error(
+      "Exports of hash modules must either be a function or an object",
+    );
   }
 
-  if (exportName) {
-    if (!(exportName in mod))
-      throw new Error(`Export "${exportName}" not found`);
-    return mod[exportName] as CompiledHashFunction;
+  if (hashFunctionExport) {
+    if (!(hashFunctionExport in exports)) {
+      throw new Error(`Hash function "${hashFunctionExport}" is not exported.`);
+    }
+
+    if (typeof exports[hashFunctionExport as keyof object] !== "function") {
+      throw new Error(`Hash function exports must be a function.`);
+    }
+
+    return exports[hashFunctionExport as keyof object] as HashFunction;
   }
 
-  // auto-detect default function export
-  if (typeof mod.default === "function")
-    return mod.default as CompiledHashFunction;
-  if (typeof mod.hash === "function") return mod.hash as CompiledHashFunction;
-
-  // pick first function export
-  const fnExport = Object.values(mod).find((v) => typeof v === "function");
-  if (!fnExport) throw new Error("No function export found in module");
-  return fnExport as CompiledHashFunction;
+  if ("default" in exports) {
+    return exports.default as HashFunction;
+  } else if ("hash" in exports) {
+    return exports.hash as HashFunction;
+  } else {
+    throw new Error(`Failed to resolve a hash function from exports.`);
+  }
 }
 
-// ---------------------- CLI ----------------------
-if (
-  process.argv[1].endsWith("hashTester.ts") ||
-  process.argv[1].endsWith("hashTester.js")
-) {
-  const argv = yargs(hideBin(process.argv))
-    .option("module", {
-      alias: "m",
-      type: "string",
-      demandOption: true,
-      description: "Path to hash module",
-    })
-    .option("export", {
-      alias: "f",
-      type: "string",
-      description: "Exported function name",
-    })
-    .option("input", { alias: "i", type: "string", demandOption: true })
-    .option("key", { alias: "k", type: "string", default: "test-key" })
-    .option("encoding", { alias: "e", type: "string", default: "hex" })
-    .option("samples", { alias: "s", type: "number", default: 100 })
-    .help()
-    .parseSync();
+async function xImport(moduleId: string) {
+  try {
+    return await import(moduleId);
+  } catch (_) {
+    try {
+      return require(moduleId);
+    } catch (_) {
+      throw new Error(`Failed to import ${moduleId}`);
+    }
+  }
+}
 
-  (async () => {
-    const hashFn = await loadHashFn(argv.module, argv.export);
-    const tester = new HashTester(hashFn);
+const requireCwd = createRequire(process.cwd() + "/");
 
-    console.log(
-      `Avalanche test for "${argv.input}":`,
-      tester.avalanche(argv.input, argv.samples),
-    );
-    console.log(
-      `Diffusion test for "${argv.input}":`,
-      tester.diffusion(argv.input, argv.samples),
-    );
-    console.log(
-      `Preimage resistance test for "${argv.input}":`,
-      tester.preimage(hashFn(argv.input), argv.input.length, 100_000),
-    );
-  })();
+function resolveModule(id: string): string {
+  try {
+    // try resolving relative to current working directory
+    return requireCwd.resolve(id);
+  } catch (_) {
+    try {
+      // try raw Node resolution
+      return require.resolve(id);
+    } catch (_) {
+      throw new Error(
+        `Cannot resolve module "${id}". Tried CWD and global require.resolve.`,
+      );
+    }
+  }
+}
+
+export async function main() {
+  const args = await yargs(hideBin(process.argv))
+    .option("module", { alias: "r", demandOption: true, string: true })
+    .option("function", { alias: "h", string: true })
+    .option("hash-input", { alias: "i", string: true, demandOption: true })
+    .option("test-iteration", { alias: "t", number: true, demandOption: true })
+    .parseAsync();
+
+  const { module, function: fn, hashInput, testIteration } = args;
+  const hashModulePath = resolveModule(module);
+  const hashModuleExports = await xImport(hashModulePath);
+  const hashFunction = loadHashFunctionFromExports(hashModuleExports, fn);
+  const tester = new HashTester(hashFunction);
+
+  // statistics
+  const length = hashInput.length;
+  const diffusion = tester.diffusion(hashInput, testIteration);
+  const avalanche = tester.avalanche(hashInput, testIteration);
+  const collisions = tester.collision(testIteration);
+  const preimage = tester.preimage(
+    hashFunction({
+      input: "test",
+      key: "test-key",
+    }),
+    length,
+    testIteration,
+  );
+
+  console.log(`Statistics:`);
+  console.log(`Average Diffusion: ${diffusion * 100}%`);
+  console.log(`Average avalanche: ${avalanche.avg}`);
+  console.log(`Collisions: ${collisions.collisions}`);
+  console.log(
+    `Preimage result: ${preimage.found ? "found" : "not found"} in ${preimage.tries}`,
+  );
+}
+
+const __filename = import.meta.filename;
+
+if (basename(process.argv[1]) === basename(__filename)) {
+  main();
 }

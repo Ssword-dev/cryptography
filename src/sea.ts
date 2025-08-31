@@ -1,4 +1,9 @@
 import { Buffer } from "node:buffer";
+import {
+  AnyEncryptionOptions,
+  EncryptionOptions,
+  EncryptionOptionsWithEncoding,
+} from "./types";
 
 // config
 const config = {
@@ -168,10 +173,7 @@ function sea256Raw(bytes: Buffer, key: Buffer): Buffer {
   return rb;
 }
 
-function sea256(s: string, key: string): Buffer;
-function sea256(s: string, key: string, encoding: BufferEncoding): string;
-
-function sea256(s: string, key: string, encoding?: BufferEncoding) {
+function sea256Positional(s: string, key: string, encoding?: BufferEncoding) {
   const sbuf = Buffer.from(s, "utf-8");
   const keybuf = Buffer.from(key, "utf-8");
 
@@ -180,6 +182,27 @@ function sea256(s: string, key: string, encoding?: BufferEncoding) {
   }
 
   return sea256Raw(sbuf, keybuf);
+}
+
+function sea256(s: string, key: string): Buffer;
+function sea256(s: string, key: string, encoding: BufferEncoding): string;
+function sea256(opts: EncryptionOptions): Buffer;
+function sea256(opts: EncryptionOptionsWithEncoding): string;
+
+function sea256(
+  argv1: string | AnyEncryptionOptions,
+  argv2: string = "",
+  argv3: BufferEncoding = "hex",
+) {
+  if (typeof argv1 === null) {
+    throw new Error("Cannot pass in null as first argument.");
+  }
+  if (typeof argv1 === "object") {
+    const { input, key = "", encoding = "hex" } = argv1;
+    return sea256Positional(input, key, encoding);
+  }
+
+  return sea256Positional(argv1, argv2, argv3);
 }
 // export
 export { sea256 };
