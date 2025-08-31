@@ -13,4 +13,4 @@
 .pnp.*
 
 # build outputs
-dist/
+dist/**/*
